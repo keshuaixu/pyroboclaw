@@ -1,27 +1,38 @@
 import struct
 
+import serial
 from PyCRC.CRCCCITT import CRCCCITT
 
 from roboclaw_cmd import Cmd
 
+import time
+
 
 class RoboClaw:
     def __init__(self, port):
-        self.port = port
+        self.port = serial.Serial(baudrate=115200, timeout=0.1, interCharTimeout=0.01)
+        self.port.port = port
+        try:
+            self.port.close()
+            self.port.open()
+        except serial.serialutil.SerialException as e:
+            self.recover_serial()
+            print(e)
 
     def _read(self, address, cmd, fmt):
         cmd_bytes = struct.pack('>BB', address, cmd)
         try:
-            self.port.reset_input_buffer()  # TODO: why?
+            # self.port.reset_input_buffer()  # TODO: potential bug?
             self.port.write(cmd_bytes)
             return_bytes = self.port.read(struct.calcsize(fmt) + 2)
         except:
-            raise
+            self.recover_serial()
+            raise Exception
             # TODO
         crc_actual = CRCCCITT().calculate(cmd_bytes + return_bytes[:-2])
         crc_expect = struct.unpack('>H', return_bytes[-2:])[0]
         if crc_actual != crc_expect:
-            raise
+            raise Exception
             # TODO
         return struct.unpack(fmt, return_bytes[:-2])
 
@@ -35,8 +46,9 @@ class RoboClaw:
             self.port.flush()
             verification = self.port.read(1)
         except:
-            raise
-            # do recevery
+            self.recover_serial()
+            raise Exception
+            # TODO
         if 0xff != struct.unpack('>B', verification)[0]:
             raise
 
@@ -45,13 +57,23 @@ class RoboClaw:
         assert motor in [1, 2]
         if motor == 1:
             cmd = Cmd.M1SPEED
-        elif motor == 2:
-            cmd = Cmd.M1SPEED
         else:
-            raise
+            cmd = Cmd.M2SPEED
         self._write(address, cmd, '>i', speed)
 
     def read_voltages(self, address):
-        mainbatt = self._read(address, Cmd.GETMBATT, '>H')[0] / 10
-        logicbatt = self._read(address, Cmd.GETLBATT, '>H')[0] / 10
+        mainbatt = self._read(address, Cmd.GETMBATT, '>H')[0] / 10.
+        logicbatt = self._read(address, Cmd.GETLBATT, '>H')[0] / 10.
         return mainbatt, logicbatt
+
+    def recover_serial(self):
+        self.port.close()
+        while not self.port.isOpen():
+            try:
+                self.port.close()
+                self.port.open()
+            except serial.serialutil.SerialException as e:
+                time.sleep(0.2)
+                print('fail')
+                print(e)
+

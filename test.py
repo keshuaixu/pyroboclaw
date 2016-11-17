@@ -2,12 +2,12 @@ from roboclaw import RoboClaw
 import serial
 import time
 
-port = serial.Serial('/dev/ttyACM0', baudrate=115200, timeout=0.1, interCharTimeout=0.01)
-if port.isOpen():
-    port.close()
-    port.open()
+
+# if port.isOpen():
+#     port.close()
+#     port.open()
 addr = 0x80
-roboclaw1 = RoboClaw(port)
+roboclaw1 = RoboClaw('/dev/ttyACM0')
 
 while True:
     print(roboclaw1.read_voltages(addr))
