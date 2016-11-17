@@ -61,6 +61,10 @@ class RoboClaw:
             cmd = Cmd.M2SPEED
         self._write(address, cmd, '>i', speed)
 
+    def read_currents(self, address):
+        currents = self._read(address, Cmd.GETCURRENTS, '>hh')
+        return tuple([c / 100. for c in currents])
+
     def read_voltages(self, address):
         mainbatt = self._read(address, Cmd.GETMBATT, '>H')[0] / 10.
         logicbatt = self._read(address, Cmd.GETLBATT, '>H')[0] / 10.
@@ -76,4 +80,3 @@ class RoboClaw:
                 time.sleep(0.2)
                 print('fail')
                 print(e)
-
