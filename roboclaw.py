@@ -6,12 +6,14 @@ from PyCRC.CRCCCITT import CRCCCITT
 from roboclaw_cmd import Cmd
 
 import time
+import math
 
 
 class RoboClaw:
-    def __init__(self, port):
+    def __init__(self, port, address):
         self.port = serial.Serial(baudrate=115200, timeout=0.1, interCharTimeout=0.01)
         self.port.port = port
+        self.address = address
         try:
             self.port.close()
             self.port.open()
@@ -19,8 +21,8 @@ class RoboClaw:
             self.recover_serial()
             print(e)
 
-    def _read(self, address, cmd, fmt):
-        cmd_bytes = struct.pack('>BB', address, cmd)
+    def _read(self, cmd, fmt):
+        cmd_bytes = struct.pack('>BB', self.address, cmd)
         try:
             # self.port.reset_input_buffer()  # TODO: potential bug?
             self.port.write(cmd_bytes)
@@ -36,8 +38,8 @@ class RoboClaw:
             # TODO
         return struct.unpack(fmt, return_bytes[:-2])
 
-    def _write(self, address, cmd, fmt, *data):
-        cmd_bytes = struct.pack('>BB', address, cmd)
+    def _write(self, cmd, fmt, *data):
+        cmd_bytes = struct.pack('>BB', self.address, cmd)
         data_bytes = struct.pack(fmt, *data)
         write_crc = CRCCCITT().calculate(cmd_bytes + data_bytes)
         crc_bytes = struct.pack('>H', write_crc)
@@ -52,23 +54,14 @@ class RoboClaw:
         if 0xff != struct.unpack('>B', verification)[0]:
             raise
 
-    def set_speed(self, address, motor, speed):
+    def set_speed(self, motor, speed):
         # assert  < speed < 128
         assert motor in [1, 2]
         if motor == 1:
             cmd = Cmd.M1SPEED
         else:
             cmd = Cmd.M2SPEED
-        self._write(address, cmd, '>i', speed)
-
-    def read_currents(self, address):
-        currents = self._read(address, Cmd.GETCURRENTS, '>hh')
-        return tuple([c / 100. for c in currents])
-
-    def read_voltages(self, address):
-        mainbatt = self._read(address, Cmd.GETMBATT, '>H')[0] / 10.
-        logicbatt = self._read(address, Cmd.GETLBATT, '>H')[0] / 10.
-        return mainbatt, logicbatt
+        self._write(cmd, '>i', speed)
 
     def recover_serial(self):
         self.port.close()
@@ -80,3 +73,181 @@ class RoboClaw:
                 time.sleep(0.2)
                 print('fail')
                 print(e)
+
+    def drive_to_position_raw(self, motor, accel, speed, deccel, position, buffer):
+        assert motor in [1, 2]
+        if motor == 1:
+            cmd = Cmd.M1SPEEDACCELDECCELPOS
+        else:
+            cmd = Cmd.M2SPEEDACCELDECCELPOS
+        self._write(cmd, '>IiIiB', accel, speed, deccel, position, buffer)
+
+    def drive_to_position(self, motor, accel, speed, deccel, position, buffer):
+        range = self.read_range(motor)
+        max_speed = self.read_max_speed(motor)
+        set_speed = (speed / 100.) * max_speed
+        set_position = (position / 100.) * (range[1] - range[0]) + range[0]
+        self.drive_to_position_raw(motor,
+                                   accel,
+                                   math.trunc(set_speed),
+                                   deccel,
+                                   math.trunc(set_position),
+                                   buffer)
+
+    def drive_motor(self, motor, speed):
+        # assert -64 <= speed <= 63
+        write_speed = speed + 64
+        assert motor in [1, 2]
+        if motor == 1:
+            cmd = Cmd.M17BIT
+        else:
+            cmd = Cmd.M27BIT
+        self._write(cmd, '>B', write_speed)
+
+    def stop_motor(self, motor):
+        assert motor in [1, 2]
+        if motor == 1:
+            self._write(Cmd.M1FORWARD, '>B', 0)
+        else:
+            self._write(Cmd.M2FORWARD, '>B', 0)
+
+    def stop_all(self):
+        self._write(Cmd.M1FORWARD, '>B', 0)
+        self._write(Cmd.M2FORWARD, '>B', 0)
+
+    def read_encoder(self, motor):
+        # Currently, this function doesn't check over/underflow, which is fine since we're using pots.
+        assert motor in [1, 2]
+        if motor == 1:
+            cmd = Cmd.GETM1ENC
+        else:
+            cmd = Cmd.GETM2ENC
+        return self._read(cmd, '>IB')[0]
+
+    def read_range(self, motor):
+        assert motor in [1, 2]
+        if motor == 1:
+            cmd = Cmd.READM1POSPID
+        else:
+            cmd = Cmd.READM2POSPID
+        pid_vals = self._read(cmd, '>IIIIIii')
+        return pid_vals[5], pid_vals[6]
+
+    def read_position(self, motor):
+        # returns position as a percentage across the full set range of the motor
+        encoder = self.read_encoder(motor)
+        range = self.read_range(motor)
+        return ((encoder - range[0]) / (range[1] - range[0])) * 100.
+
+    def read_status(self):
+        cmd = Cmd.GETERROR
+        status = self._read(cmd, '>B')[0]
+        return {
+            0x0000: 'Normal',
+            0x0001: 'Warning: High Current - Motor 1',
+            0x0002: 'Warning: High Current - Motor 2',
+            0x0004: 'Emergency Stop Triggered',
+            0x0008: 'Error: High Temperature - Sensor 1',
+            0x0010: 'Error: High Temperature - Sensor 2',
+            0x0020: 'Error: High Voltage - Main Battery',
+            0x0040: 'Error: High Voltage - Logic Battery',
+            0x0080: 'Error: Low Voltage - Logic Battery',
+            0x0100: 'Driver Fault - Motor 1 Driver',
+            0x0200: 'Driver Fault - Motor 2 Driver',
+            0x0400: 'Warning: High Voltage - Main Battery',
+            0x0800: 'Warning: Low Voltage - Main Battery',
+            0x1000: 'Warning: High Temperature - Sensor 1',
+            0x2000: 'Warning: High Temperature - Sensor 2',
+            0x4000: 'Home - Motor 1',
+            0x8000: 'Home - Motor 2'
+        }.get(status, 'Unknown Error')
+
+    def read_temp_sensor(self, sensor):
+        assert sensor in [1, 2]
+        if sensor == 1:
+            cmd = Cmd.GETTEMP
+        else:
+            cmd = Cmd.GETTEMP2
+        return self._read(cmd, '>H')[0] / 10
+
+    def read_batt_voltage(self, battery):
+        assert battery in ['logic', 'Logic', 'L', 'l',
+                           'main', 'Main', 'motor', 'Motor', 'M', 'm']
+        if battery in ['logic', 'Logic', 'L', 'l']:
+            cmd = Cmd.GETLBATT
+        else:
+            cmd = Cmd.GETMBATT
+        return self._read(cmd, '>H') / 10
+
+    def read_voltages(self):
+        mainbatt = self._read(Cmd.GETMBATT, '>H')[0] / 10.
+        logicbatt = self._read(Cmd.GETLBATT, '>H')[0] / 10.
+        return mainbatt, logicbatt
+
+    def read_currents(self):
+        currents = self._read(Cmd.GETCURRENTS, '>hh')
+        return tuple([c / 100. for c in currents])
+
+    def read_motor_current(self, motor):
+        assert motor in [1, 2]
+        if motor == 1:
+            return self.read_currents()[0]
+        else:
+            return self.read_currents()[1]
+
+    def read_motor_pwrs(self):
+        pwms = self._read(Cmd.GETPWMS, '>hh')
+        return tuple([c / 327.67 for c in pwms])
+
+    def read_motor_pwr(self, motor):
+        assert motor in [1, 2]
+        if motor == 1:
+            return self.read_motor_pwrs()[0]
+        else:
+            return self.read_motor_pwrs()[1]
+
+    def read_input_pin_modes(self):
+        modes = self._read(Cmd.GETPINFUNCTIONS, '>BBB')
+        s3_mode = {
+            0: 'Default',
+            1: 'Emergency Stop (require restart)',
+            2: 'Emergency Stop',
+            3: 'Voltage Clamp'
+        }.get(modes[0], 'Unknown Mode')
+        s4_mode = {
+            0: 'Disabled',
+            1: 'Emergency Stop (require restart)',
+            2: 'Emergency Stop',
+            3: 'Voltage Clamp',
+            4: 'Home Motor 1'
+        }.get(modes[0], 'Unknown Mode')
+        s5_mode = {
+            0: 'Disabled',
+            1: 'Emergency Stop (require restart)',
+            2: 'Emergency Stop',
+            3: 'Voltage Clamp',
+            4: 'Home Motor 2'
+        }.get(modes[0], 'Unknown Mode')
+        return s3_mode, s4_mode, s5_mode
+
+    def read_max_speed(self, motor):
+        assert motor in [1, 2]
+        if motor == 1:
+            cmd = Cmd.READM1PID
+        else:
+            cmd = Cmd.READM2PID
+        return self._read(cmd, '>IIII')[3]
+
+    def read_speed(self, motor):
+        # returns velocity as a percentage of max speed
+        assert motor in [1, 2]
+        if motor == 1:
+            cmd = Cmd.GETM1SPEED
+        else:
+            cmd = Cmd.GETM2SPEED
+        max_speed = self.read_max_speed(motor)
+        speed_vals = self._read(cmd, '>IB')
+        speed = (speed_vals[0] / max_speed) * 100.
+        if speed_vals[1]:
+            speed *= -1
+        return speed
