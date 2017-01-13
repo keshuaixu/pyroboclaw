@@ -6,6 +6,7 @@ from PyCRC.CRCCCITT import CRCCCITT
 from roboclaw_cmd import Cmd
 
 import time
+from threading import Lock
 import math
 
 
@@ -14,6 +15,7 @@ class RoboClaw:
         self.port = serial.Serial(baudrate=115200, timeout=0.1, interCharTimeout=0.01)
         self.port.port = port
         self.address = address
+        self.serial_lock = Lock()
         try:
             self.port.close()
             self.port.open()
@@ -25,8 +27,9 @@ class RoboClaw:
         cmd_bytes = struct.pack('>BB', self.address, cmd)
         try:
             # self.port.reset_input_buffer()  # TODO: potential bug?
-            self.port.write(cmd_bytes)
-            return_bytes = self.port.read(struct.calcsize(fmt) + 2)
+            with self.serial_lock:
+                self.port.write(cmd_bytes)
+                return_bytes = self.port.read(struct.calcsize(fmt) + 2)
         except:
             self.recover_serial()
             raise Exception
@@ -44,9 +47,10 @@ class RoboClaw:
         write_crc = CRCCCITT().calculate(cmd_bytes + data_bytes)
         crc_bytes = struct.pack('>H', write_crc)
         try:
-            self.port.write(cmd_bytes + data_bytes + crc_bytes)
-            self.port.flush()
-            verification = self.port.read(1)
+            with self.serial_lock:
+                self.port.write(cmd_bytes + data_bytes + crc_bytes)
+                self.port.flush()
+                verification = self.port.read(1)
         except:
             self.recover_serial()
             raise Exception
@@ -172,7 +176,7 @@ class RoboClaw:
             cmd = Cmd.GETLBATT
         else:
             cmd = Cmd.GETMBATT
-        return self._read(cmd, '>H') / 10
+        return self._read(cmd, '>H')[0] / 10
 
     def read_voltages(self):
         mainbatt = self._read(Cmd.GETMBATT, '>H')[0] / 10.
