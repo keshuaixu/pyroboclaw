@@ -55,8 +55,6 @@ class RoboClaw:
             raise
 
     def set_speed(self, motor, speed):
-        # assert  < speed < 128
-        assert motor in [1, 2]
         if motor == 1:
             cmd = Cmd.M1SPEED
         else:
@@ -75,7 +73,7 @@ class RoboClaw:
                 print(e)
 
     def drive_to_position_raw(self, motor, accel, speed, deccel, position, buffer):
-        assert motor in [1, 2]
+        # drive to a position expressed as a percentage of the full range of the motor
         if motor == 1:
             cmd = Cmd.M1SPEEDACCELDECCELPOS
         else:
@@ -89,15 +87,14 @@ class RoboClaw:
         set_position = (position / 100.) * (range[1] - range[0]) + range[0]
         self.drive_to_position_raw(motor,
                                    accel,
-                                   math.trunc(set_speed),
+                                   round(set_speed),
                                    deccel,
-                                   math.trunc(set_position),
+                                   round(set_position),
                                    buffer)
 
     def drive_motor(self, motor, speed):
         # assert -64 <= speed <= 63
         write_speed = speed + 64
-        assert motor in [1, 2]
         if motor == 1:
             cmd = Cmd.M17BIT
         else:
@@ -105,7 +102,6 @@ class RoboClaw:
         self._write(cmd, '>B', write_speed)
 
     def stop_motor(self, motor):
-        assert motor in [1, 2]
         if motor == 1:
             self._write(Cmd.M1FORWARD, '>B', 0)
         else:
@@ -117,15 +113,17 @@ class RoboClaw:
 
     def read_encoder(self, motor):
         # Currently, this function doesn't check over/underflow, which is fine since we're using pots.
-        assert motor in [1, 2]
         if motor == 1:
             cmd = Cmd.GETM1ENC
         else:
             cmd = Cmd.GETM2ENC
         return self._read(cmd, '>IB')[0]
 
+    def reset_quad_encoders(self):
+        self._write(Cmd.SETM1ENCCOUNT, '>I', 0)
+        self._write(Cmd.SETM2ENCCOUNT, '>I', 0)
+
     def read_range(self, motor):
-        assert motor in [1, 2]
         if motor == 1:
             cmd = Cmd.READM1POSPID
         else:
@@ -137,7 +135,7 @@ class RoboClaw:
         # returns position as a percentage across the full set range of the motor
         encoder = self.read_encoder(motor)
         range = self.read_range(motor)
-        return ((encoder - range[0]) / (range[1] - range[0])) * 100.
+        return ((encoder - range[0]) / float(range[1] - range[0])) * 100.
 
     def read_status(self):
         cmd = Cmd.GETERROR
@@ -163,7 +161,6 @@ class RoboClaw:
         }.get(status, 'Unknown Error')
 
     def read_temp_sensor(self, sensor):
-        assert sensor in [1, 2]
         if sensor == 1:
             cmd = Cmd.GETTEMP
         else:
@@ -171,8 +168,6 @@ class RoboClaw:
         return self._read(cmd, '>H')[0] / 10
 
     def read_batt_voltage(self, battery):
-        assert battery in ['logic', 'Logic', 'L', 'l',
-                           'main', 'Main', 'motor', 'Motor', 'M', 'm']
         if battery in ['logic', 'Logic', 'L', 'l']:
             cmd = Cmd.GETLBATT
         else:
@@ -189,22 +184,20 @@ class RoboClaw:
         return tuple([c / 100. for c in currents])
 
     def read_motor_current(self, motor):
-        assert motor in [1, 2]
         if motor == 1:
             return self.read_currents()[0]
         else:
             return self.read_currents()[1]
 
-    def read_motor_pwrs(self):
+    def read_motor_pwms(self):
         pwms = self._read(Cmd.GETPWMS, '>hh')
         return tuple([c / 327.67 for c in pwms])
 
-    def read_motor_pwr(self, motor):
-        assert motor in [1, 2]
+    def read_motor_pwm(self, motor):
         if motor == 1:
-            return self.read_motor_pwrs()[0]
+            return self.read_motor_pwms()[0]
         else:
-            return self.read_motor_pwrs()[1]
+            return self.read_motor_pwms()[1]
 
     def read_input_pin_modes(self):
         modes = self._read(Cmd.GETPINFUNCTIONS, '>BBB')
@@ -231,7 +224,6 @@ class RoboClaw:
         return s3_mode, s4_mode, s5_mode
 
     def read_max_speed(self, motor):
-        assert motor in [1, 2]
         if motor == 1:
             cmd = Cmd.READM1PID
         else:
@@ -240,7 +232,6 @@ class RoboClaw:
 
     def read_speed(self, motor):
         # returns velocity as a percentage of max speed
-        assert motor in [1, 2]
         if motor == 1:
             cmd = Cmd.GETM1SPEED
         else:
