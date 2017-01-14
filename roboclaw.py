@@ -1,27 +1,33 @@
-import struct
+import time
+from threading import Lock
 
+import logging
 import serial
+import struct
 from PyCRC.CRCCCITT import CRCCCITT
 
 from roboclaw_cmd import Cmd
 
-import time
-from threading import Lock
-import math
+logger = logging.getLogger('pyroboclaw')
+logger.setLevel(logging.WARNING)
 
 
 class RoboClaw:
-    def __init__(self, port, address):
+    def __init__(self, port, address, auto_recover=False, **kwargs):
         self.port = serial.Serial(baudrate=115200, timeout=0.1, interCharTimeout=0.01)
         self.port.port = port
         self.address = address
         self.serial_lock = Lock()
+        self.auto_recover = auto_recover
         try:
             self.port.close()
             self.port.open()
-        except serial.serialutil.SerialException as e:
-            self.recover_serial()
-            print(e)
+        except serial.serialutil.SerialException:
+            logger.exception('roboclaw serial')
+            if auto_recover:
+                self.recover_serial()
+            else:
+                raise
 
     def _read(self, cmd, fmt):
         cmd_bytes = struct.pack('>BB', self.address, cmd)
@@ -30,16 +36,18 @@ class RoboClaw:
             with self.serial_lock:
                 self.port.write(cmd_bytes)
                 return_bytes = self.port.read(struct.calcsize(fmt) + 2)
-        except:
-            self.recover_serial()
-            raise Exception
-            # TODO
-        crc_actual = CRCCCITT().calculate(cmd_bytes + return_bytes[:-2])
-        crc_expect = struct.unpack('>H', return_bytes[-2:])[0]
-        if crc_actual != crc_expect:
-            raise Exception
-            # TODO
-        return struct.unpack(fmt, return_bytes[:-2])
+            crc_actual = CRCCCITT().calculate(cmd_bytes + return_bytes[:-2])
+            crc_expect = struct.unpack('>H', return_bytes[-2:])[0]
+            if crc_actual != crc_expect:
+                logger.error('read crc failed')
+                raise CRCException('CRC failed')
+            return struct.unpack(fmt, return_bytes[:-2])
+        except serial.serialutil.SerialException:
+            if self.auto_recover:
+                self.recover_serial()
+            else:
+                logger.exception('roboclaw serial')
+                raise
 
     def _write(self, cmd, fmt, *data):
         cmd_bytes = struct.pack('>BB', self.address, cmd)
@@ -51,12 +59,15 @@ class RoboClaw:
                 self.port.write(cmd_bytes + data_bytes + crc_bytes)
                 self.port.flush()
                 verification = self.port.read(1)
-        except:
-            self.recover_serial()
-            raise Exception
-            # TODO
-        if 0xff != struct.unpack('>B', verification)[0]:
-            raise
+            if 0xff != struct.unpack('>B', verification)[0]:
+                logger.error('write crc failed')
+                raise CRCException('CRC failed')
+        except serial.serialutil.SerialException:
+            if self.auto_recover:
+                self.recover_serial()
+            else:
+                logger.exception('roboclaw serial')
+                raise
 
     def set_speed(self, motor, speed):
         if motor == 1:
@@ -73,8 +84,7 @@ class RoboClaw:
                 self.port.open()
             except serial.serialutil.SerialException as e:
                 time.sleep(0.2)
-                print('fail')
-                print(e)
+                logger.warning('failed to recover serial. retrying.')
 
     def drive_to_position_raw(self, motor, accel, speed, deccel, position, buffer):
         # drive to a position expressed as a percentage of the full range of the motor
@@ -246,3 +256,7 @@ class RoboClaw:
         if speed_vals[1]:
             speed *= -1
         return speed
+
+
+class CRCException(Exception):
+    pass
