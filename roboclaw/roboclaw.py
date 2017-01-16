@@ -1,12 +1,12 @@
+import logging
 import time
 from threading import Lock
 
-import logging
 import serial
 import struct
 from PyCRC.CRCCCITT import CRCCCITT
 
-from roboclaw_cmd import Cmd
+from roboclaw.roboclaw_cmd import Cmd
 
 logger = logging.getLogger('pyroboclaw')
 logger.setLevel(logging.WARNING)
